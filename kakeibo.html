@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="家計簿" />
+  <meta name="theme-color" content="#0f0f14" />
+  <title>家計簿</title>
+
+  <!-- PWA Manifest (inline) -->
+  <link rel="manifest" href="data:application/json,{
+    %22name%22:%22家計簿%22,
+    %22short_name%22:%22家計簿%22,
+    %22start_url%22:%22.%22,
+    %22display%22:%22standalone%22,
+    %22background_color%22:%22%230f0f14%22,
+    %22theme_color%22:%22%230f0f14%22,
+    %22icons%22:[{%22src%22:%22data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='80' fill='%230f0f14'/%3E%3Ctext y='340' x='90' font-size='320'%3E💰%3C/text%3E%3C/svg%3E%22,%22sizes%22:%22512x512%22,%22type%22:%22image/svg+xml%22}]
+  }" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; background: #0f0f14; }
+    body { overscroll-behavior: none; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.5); }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    ::-webkit-scrollbar { width: 0; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    const CATEGORIES = {
+      income: [
+        { id: "salary",   label: "給与",   icon: "💼" },
+        { id: "bonus",    label: "ボーナス", icon: "🎁" },
+        { id: "side",     label: "副収入",  icon: "💡" },
+        { id: "other_in", label: "その他",  icon: "➕" },
+      ],
+      expense: [
+        { id: "food",        label: "食費",   icon: "🍱" },
+        { id: "housing",     label: "住居",   icon: "🏠" },
+        { id: "transport",   label: "交通",   icon: "🚃" },
+        { id: "utility",     label: "光熱費", icon: "🔌" },
+        { id: "health",      label: "医療",   icon: "💊" },
+        { id: "entertainment",label: "娯楽",  icon: "🎮" },
+        { id: "clothing",    label: "衣服",   icon: "👗" },
+        { id: "education",   label: "教育",   icon: "📚" },
+        { id: "other_out",   label: "その他", icon: "📌" },
+      ],
+    };
+
+    const ALL_CATS = [...CATEGORIES.income, ...CATEGORIES.expense];
+    const MONTHS = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+
+    function getCatInfo(id) {
+      return ALL_CATS.find(c => c.id === id) || { label: id, icon: "💰" };
+    }
+
+    const STORAGE_KEY = "kakeibo_entries_v1";
+
+    function loadEntries() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) return JSON.parse(raw);
+      } catch(e) {}
+      return [];
+    }
+
+    function saveEntries(entries) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch(e) {}
+    }
+
+    const S = {
+      app: {
+        minHeight: "100dvh",
+        background: "#0f0f14",
+        color: "#f0ede8",
+        fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', 'Meiryo', sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      },
+      wrap: { width: "100%", maxWidth: 480 },
+      header: { padding: "env(safe-area-inset-top, 20px) 20px 0", paddingTop: "max(env(safe-area-inset-top), 20px)" },
+      card: { background: "#191920", borderRadius: 12 },
+    };
+
+    function App() {
+      const now = new Date();
+      const [entries, setEntries] = useState(loadEntries);
+      const [viewMonth, setViewMonth] = useState({ y: now.getFullYear(), m: now.getMonth() });
+      const [tab, setTab] = useState("summary");
+      const [form, setForm] = useState({ type: "expense", category: "food", amount: "", note: "", date: now.toISOString().slice(0,10) });
+      const [editId, setEditId] = useState(null);
+      const [nextId, setNextId] = useState(() => {
+        const saved = loadEntries();
+        return saved.length ? Math.max(...saved.map(e => e.id)) + 1 : 1;
+      });
+      const [toast, setToast] = useState(null);
+
+      useEffect(() => { saveEntries(entries); }, [entries]);
+
+      function showToast(msg) {
+        setToast(msg);
+        setTimeout(() => setToast(null), 2000);
+      }
+
+      const monthEntries = useMemo(() =>
+        entries.filter(e => {
+          const d = new Date(e.date);
+          return d.getFullYear() === viewMonth.y && d.getMonth() === viewMonth.m;
+        }).sort((a,b) => b.date.localeCompare(a.date)),
+      [entries, viewMonth]);
+
+      const totalIncome  = monthEntries.filter(e => e.type==="income").reduce((s,e)=>s+e.amount,0);
+      const totalExpense = monthEntries.filter(e => e.type==="expense").reduce((s,e)=>s+e.amount,0);
+      const balance      = totalIncome - totalExpense;
+
+      const expBreakdown = useMemo(() => {
+        const map = {};
+        monthEntries.filter(e=>e.type==="expense").forEach(e => {
+          map[e.category] = (map[e.category]||0) + e.amount;
+        });
+        return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+      }, [monthEntries]);
+
+      function prevMonth() {
+        setViewMonth(v => v.m===0 ? {y:v.y-1,m:11} : {y:v.y,m:v.m-1});
+      }
+      function nextMonth() {
+        setViewMonth(v => v.m===11 ? {y:v.y+1,m:0} : {y:v.y,m:v.m+1});
+      }
+
+      function setFormField(k, v) {
+        if (k === "type") {
+          setForm(f => ({ ...f, type: v, category: v==="income" ? "salary" : "food" }));
+        } else {
+          setForm(f => ({ ...f, [k]: v }));
+        }
+      }
+
+      function handleSubmit() {
+        const amt = parseInt(String(form.amount).replace(/,/g,""), 10);
+        if (!amt || amt <= 0 || !form.date) return;
+        if (editId !== null) {
+          setEntries(es => es.map(e => e.id===editId ? {...e,...form,amount:amt} : e));
+          setEditId(null);
+          showToast("更新しました");
+        } else {
+          setEntries(es => [...es, {id: nextId, ...form, amount: amt}]);
+          setNextId(n => n+1);
+          showToast("保存しました");
+        }
+        setForm({ type:"expense", category:"food", amount:"", note:"", date: new Date().toISOString().slice(0,10) });
+        setTab("list");
+      }
+
+      function handleEdit(entry) {
+        setForm({ type:entry.type, category:entry.category, amount:String(entry.amount), note:entry.note, date:entry.date });
+        setEditId(entry.id);
+        setTab("add");
+      }
+
+      function handleDelete(id) {
+        if (!window.confirm("この記録を削除しますか？")) return;
+        setEntries(es => es.filter(e => e.id!==id));
+        showToast("削除しました");
+      }
+
+      function handleAddNew() {
+        setForm({ type:"expense", category:"food", amount:"", note:"", date: new Date().toISOString().slice(0,10) });
+        setEditId(null);
+        setTab("add");
+      }
+
+      const fmt = n => n.toLocaleString("ja-JP");
+      const maxExp = expBreakdown[0]?.[1] || 1;
+      const canSubmit = parseInt(form.amount) > 0 && form.date;
+
+      return (
+        <div style={S.app}>
+          {/* Toast */}
+          {toast && (
+            <div style={{
+              position:"fixed", top:60, left:"50%", transform:"translateX(-50%)",
+              background:"#e8c96a", color:"#0f0f14", borderRadius:20,
+              padding:"8px 20px", fontSize:13, fontWeight:700, zIndex:9999,
+              boxShadow:"0 4px 20px rgba(0,0,0,0.4)",
+              animation:"fadeIn 0.2s ease",
+            }}>{toast}</div>
+          )}
+
+          <div style={{...S.wrap, ...S.header}}>
+            {/* Title row */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4 }}>
+              <div>
+                <div style={{ fontSize:10, color:"#666", letterSpacing:3, textTransform:"uppercase", marginBottom:2 }}>Household Budget</div>
+                <div style={{ fontSize:22, fontWeight:700, letterSpacing:-0.5 }}>家計簿</div>
+              </div>
+              <button onClick={handleAddNew} style={{
+                background:"#e8c96a", color:"#0f0f14", border:"none",
+                borderRadius:24, padding:"10px 20px", fontWeight:700,
+                fontSize:13, cursor:"pointer",
+              }}>＋ 追加</button>
+            </div>
+
+            {/* Month selector */}
+            <div style={{
+              display:"flex", alignItems:"center", justifyContent:"center",
+              gap:16, margin:"18px 0 0", ...S.card, padding:"12px 0",
+            }}>
+              <button onClick={prevMonth} style={{ background:"none", border:"none", color:"#888", fontSize:22, cursor:"pointer", padding:"0 12px", lineHeight:1 }}>‹</button>
+              <span style={{ fontSize:16, fontWeight:600, minWidth:110, textAlign:"center" }}>
+                {viewMonth.y}年 {MONTHS[viewMonth.m]}
+              </span>
+              <button onClick={nextMonth} style={{ background:"none", border:"none", color:"#888", fontSize:22, cursor:"pointer", padding:"0 12px", lineHeight:1 }}>›</button>
+            </div>
+
+            {/* Summary cards */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, margin:"12px 0 0" }}>
+              {[
+                { label:"収入",  value:totalIncome,  color:"#6adcb0" },
+                { label:"支出",  value:totalExpense, color:"#e87a6a" },
+                { label:"収支",  value:balance,      color: balance>=0 ? "#e8c96a" : "#e87a6a" },
+              ].map(c => (
+                <div key={c.label} style={{ ...S.card, padding:"12px 8px", textAlign:"center" }}>
+                  <div style={{ fontSize:10, color:"#666", marginBottom:4 }}>{c.label}</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:c.color, letterSpacing:-0.3 }}>
+                    {c.label==="収支" && balance<0 ? "−" : ""}¥{fmt(Math.abs(c.value))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Tabs */}
+            <div style={{ display:"flex", gap:4, margin:"14px 0 0", ...S.card, padding:4 }}>
+              {[["summary","概要"],["list","明細"]].map(([t,label]) => (
+                <button key={t} onClick={() => setTab(t)} style={{
+                  flex:1, padding:"9px 0", border:"none", borderRadius:8,
+                  background: tab===t ? "#e8c96a" : "transparent",
+                  color: tab===t ? "#0f0f14" : "#888",
+                  fontWeight: tab===t ? 700 : 400,
+                  fontSize:13, cursor:"pointer", transition:"all 0.18s",
+                }}>{label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Scrollable content */}
+          <div style={{ ...S.wrap, flex:1, padding:"14px 20px 40px", overflowY:"auto" }}>
+
+            {/* Summary */}
+            {tab==="summary" && (
+              <div>
+                <div style={{ fontSize:11, color:"#555", marginBottom:12, letterSpacing:1 }}>支出カテゴリー</div>
+                {expBreakdown.length === 0 && (
+                  <div style={{ color:"#444", fontSize:13, textAlign:"center", marginTop:50 }}>この月の支出はありません</div>
+                )}
+                {expBreakdown.map(([cat, amt]) => {
+                  const info = getCatInfo(cat);
+                  return (
+                    <div key={cat} style={{ marginBottom:16 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                        <span style={{ fontSize:13 }}>{info.icon} {info.label}</span>
+                        <span style={{ fontSize:13, fontWeight:600 }}>¥{fmt(amt)}</span>
+                      </div>
+                      <div style={{ height:5, background:"#22222c", borderRadius:4, overflow:"hidden" }}>
+                        <div style={{
+                          height:"100%",
+                          width:`${(amt/maxExp)*100}%`,
+                          background:"linear-gradient(90deg,#e8c96a,#e87a6a)",
+                          borderRadius:4,
+                        }} />
+                      </div>
+                      <div style={{ fontSize:11, color:"#555", marginTop:3, textAlign:"right" }}>
+                        {totalExpense ? Math.round((amt/totalExpense)*100) : 0}%
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* List */}
+            {tab==="list" && (
+              <div>
+                {monthEntries.length === 0 && (
+                  <div style={{ color:"#444", fontSize:13, textAlign:"center", marginTop:50 }}>
+                    この月の記録はありません<br />
+                    <span style={{ color:"#e8c96a", cursor:"pointer", fontSize:12, marginTop:8, display:"inline-block" }} onClick={handleAddNew}>
+                      ＋ 最初の記録を追加
+                    </span>
+                  </div>
+                )}
+                {monthEntries.map(entry => {
+                  const info = getCatInfo(entry.category);
+                  return (
+                    <div key={entry.id} style={{ ...S.card, padding:"13px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:12 }}>
+                      <div style={{
+                        width:40, height:40, borderRadius:10, flexShrink:0,
+                        background: entry.type==="income" ? "rgba(106,220,176,0.12)" : "rgba(232,122,106,0.12)",
+                        display:"flex", alignItems:"center", justifyContent:"center", fontSize:18,
+                      }}>{info.icon}</div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                          {info.label}{entry.note ? ` · ${entry.note}` : ""}
+                        </div>
+                        <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{entry.date}</div>
+                      </div>
+                      <div style={{ textAlign:"right", flexShrink:0 }}>
+                        <div style={{ fontSize:14, fontWeight:700, color: entry.type==="income" ? "#6adcb0" : "#e87a6a" }}>
+                          {entry.type==="income" ? "+" : "−"}¥{fmt(entry.amount)}
+                        </div>
+                        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:5 }}>
+                          <button onClick={()=>handleEdit(entry)} style={{ background:"none", border:"none", color:"#555", fontSize:15, cursor:"pointer", padding:0 }}>✏️</button>
+                          <button onClick={()=>handleDelete(entry.id)} style={{ background:"none", border:"none", color:"#555", fontSize:15, cursor:"pointer", padding:0 }}>🗑️</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Add / Edit form */}
+            {tab==="add" && (
+              <div>
+                <div style={{ fontSize:15, fontWeight:700, marginBottom:18 }}>
+                  {editId!==null ? "記録を編集" : "新しい記録"}
+                </div>
+
+                {/* Type toggle */}
+                <div style={{ display:"flex", gap:4, marginBottom:16, ...S.card, padding:4 }}>
+                  {[["expense","支出"],["income","収入"]].map(([t,label]) => (
+                    <button key={t} onClick={()=>setFormField("type",t)} style={{
+                      flex:1, padding:"10px 0", border:"none", borderRadius:8,
+                      background: form.type===t ? (t==="income"?"#6adcb0":"#e87a6a") : "transparent",
+                      color: form.type===t ? "#0f0f14" : "#888",
+                      fontWeight: form.type===t ? 700 : 400,
+                      fontSize:14, cursor:"pointer",
+                    }}>{label}</button>
+                  ))}
+                </div>
+
+                {/* Category */}
+                <div style={{ marginBottom:16 }}>
+                  <div style={{ fontSize:11, color:"#666", marginBottom:8 }}>カテゴリー</div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
+                    {CATEGORIES[form.type].map(cat => (
+                      <button key={cat.id} onClick={()=>setFormField("category",cat.id)} style={{
+                        padding:"7px 13px", borderRadius:20,
+                        border: `1.5px solid ${form.category===cat.id ? "#e8c96a" : "#2a2a35"}`,
+                        background: form.category===cat.id ? "rgba(232,201,106,0.1)" : "#191920",
+                        color: form.category===cat.id ? "#e8c96a" : "#888",
+                        fontSize:12, cursor:"pointer",
+                      }}>{cat.icon} {cat.label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div style={{ marginBottom:14 }}>
+                  <div style={{ fontSize:11, color:"#666", marginBottom:6 }}>金額</div>
+                  <div style={{ position:"relative" }}>
+                    <span style={{ position:"absolute", left:14, top:"50%", transform:"translateY(-50%)", color:"#666", fontSize:16 }}>¥</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={form.amount}
+                      onChange={e=>setFormField("amount",e.target.value)}
+                      placeholder="0"
+                      style={{
+                        width:"100%",
+                        background:"#191920", border:"1.5px solid #2a2a35",
+                        borderRadius:10, padding:"13px 14px 13px 32px",
+                        color:"#f0ede8", fontSize:18, fontWeight:700, outline:"none",
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Date */}
+                <div style={{ marginBottom:14 }}>
+                  <div style={{ fontSize:11, color:"#666", marginBottom:6 }}>日付</div>
+                  <input
+                    type="date"
+                    value={form.date}
+                    onChange={e=>setFormField("date",e.target.value)}
+                    style={{
+                      width:"100%",
+                      background:"#191920", border:"1.5px solid #2a2a35",
+                      borderRadius:10, padding:"13px 14px",
+                      color:"#f0ede8", fontSize:14, outline:"none",
+                    }}
+                  />
+                </div>
+
+                {/* Note */}
+                <div style={{ marginBottom:24 }}>
+                  <div style={{ fontSize:11, color:"#666", marginBottom:6 }}>メモ（任意）</div>
+                  <input
+                    type="text"
+                    value={form.note}
+                    onChange={e=>setFormField("note",e.target.value)}
+                    placeholder="例：スーパー、コンビニ..."
+                    style={{
+                      width:"100%",
+                      background:"#191920", border:"1.5px solid #2a2a35",
+                      borderRadius:10, padding:"13px 14px",
+                      color:"#f0ede8", fontSize:14, outline:"none",
+                    }}
+                  />
+                </div>
+
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={()=>{setTab("list");setEditId(null);}} style={{
+                    flex:1, padding:"14px 0", border:"1.5px solid #2a2a35",
+                    borderRadius:12, background:"transparent", color:"#888",
+                    fontSize:14, cursor:"pointer",
+                  }}>キャンセル</button>
+                  <button onClick={handleSubmit} style={{
+                    flex:2, padding:"14px 0", border:"none",
+                    borderRadius:12,
+                    background: canSubmit ? "#e8c96a" : "#2a2a35",
+                    color: canSubmit ? "#0f0f14" : "#555",
+                    fontSize:14, fontWeight:700, cursor: canSubmit ? "pointer" : "default",
+                    transition:"background 0.2s",
+                  }}>{editId!==null ? "更新する" : "保存する"}</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <style>{`
+            @keyframes fadeIn { from{opacity:0;transform:translateX(-50%) translateY(-8px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+            input::placeholder { color: #444; }
+          `}</style>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+
+  <!-- Service Worker for offline support -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      const swCode = `
+        const CACHE = 'kakeibo-v1';
+        self.addEventListener('install', e => {
+          e.waitUntil(caches.open(CACHE).then(c => c.addAll(['.', './'])));
+          self.skipWaiting();
+        });
+        self.addEventListener('fetch', e => {
+          e.respondWith(
+            caches.match(e.request).then(r => r || fetch(e.request).catch(() => caches.match('.')))
+          );
+        });
+      `;
+      const blob = new Blob([swCode], { type: 'application/javascript' });
+      const swUrl = URL.createObjectURL(blob);
+      navigator.serviceWorker.register(swUrl).catch(() => {});
+    }
+  </script>
+</body>
+</html>
